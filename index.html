@@ -1,0 +1,532 @@
+<!doctype html><html><head><meta charset=utf8><meta name=viewport content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{color-scheme:light;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}html{scroll-padding-top:env(safe-area-inset-top,0px)}body{margin:0;padding:0;font:14px -apple-system,BlinkMacSystemFont,sans-serif;background:#faf9f5;color:#141413}img{max-width:100%}[hidden]:not([hidden=until-found i]){display:none!important}</style></head><body>
+<title>Code Flow 値トレーサー</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;700&family=JetBrains+Mono:wght@500;700&display=swap">
+<style>
+/* Layout: sequence diagram on the left as the working surface, a sticky "lifecycle" panel on the right that explains whatever is hovered */
+:root {
+  --bg: #f4f6f3;
+  --surface: #ffffff;
+  --fg: #1a201d;
+  --muted: #5d6762;
+  --line: #c6cdc8;
+  --band: #fbf0e1;
+  --band-line: #e2bf8c;
+  --prep: #eef1ee;
+  --front: #37423d;
+  --back: #b45309;
+  --c-rand: #0f766e;
+  --c-code: #c2410c;
+  --c-secret: #a21caf;
+  --c-ident: #4d7c0f;
+  --c-token: #1d4ed8;
+  --c-sess: #8a5a12;
+  --f-body: "IBM Plex Sans JP", "Hiragino Sans", "Noto Sans JP", system-ui, sans-serif;
+  --f-mono: "JetBrains Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111513; --surface: #1a1f1c; --fg: #e5ebe7; --muted: #9ba7a1; --line: #39423d;
+    --band: #2a2116; --band-line: #74521f; --prep: #1f2522; --front: #c4cdc8; --back: #f59e0b;
+    --c-rand: #2dd4bf; --c-code: #fb923c; --c-secret: #e879f9; --c-ident: #a3e635; --c-token: #7aa7ff; --c-sess: #e0b56a;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111513; --surface: #1a1f1c; --fg: #e5ebe7; --muted: #9ba7a1; --line: #39423d;
+  --band: #2a2116; --band-line: #74521f; --prep: #1f2522; --front: #c4cdc8; --back: #f59e0b;
+  --c-rand: #2dd4bf; --c-code: #fb923c; --c-secret: #e879f9; --c-ident: #a3e635; --c-token: #7aa7ff; --c-sess: #e0b56a;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--fg); font-family: var(--f-body); font-size: 14px; line-height: 1.65; }
+.wrap { max-width: 1320px; margin: 0 auto; padding-inline: 20px; padding-block: 28px 48px; display: grid; gap: 20px; }
+header h1 { font-size: 1.6rem; margin: 0; letter-spacing: .01em; text-wrap: balance; }
+header p { margin: 4px 0 0; color: var(--muted); max-width: 70ch; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 14px 22px; }
+.legend .grp { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.legend .cat { font-size: 11px; letter-spacing: .08em; color: var(--muted); margin-right: 2px; }
+.tchip {
+  --c: var(--fg);
+  font: 500 12px/1 var(--f-mono); color: var(--c); cursor: pointer;
+  background: color-mix(in srgb, var(--c) 12%, var(--surface));
+  border: 1.5px solid var(--c); border-radius: 6px; padding: 5px 8px;
+}
+.tchip:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.tchip.on { background: var(--c); color: var(--surface); }
+.legend .chan { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+.legend .chan i { display: inline-block; width: 28px; height: 0; border-top: 2px solid var(--front); }
+.legend .chan i.b { border-top: 3px solid var(--back); }
+
+.main { display: grid; grid-template-columns: minmax(0, 1fr) 380px; gap: 20px; align-items: start; }
+.diagram { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow-x: auto; min-width: 0; }
+.diagram svg { display: block; width: 100%; min-width: 760px; height: auto; }
+
+.panel {
+  position: sticky; top: calc(env(safe-area-inset-top, 0px) + 16px);
+  background: var(--surface); border: 1px solid var(--line); border-radius: 10px;
+  padding: 18px 20px; max-height: calc(100vh - 32px); overflow-y: auto; min-width: 0;
+}
+.panel h2 { font-size: 1.15rem; margin: 0 0 4px; }
+.panel h3 { font-size: 11px; letter-spacing: .1em; color: var(--muted); margin: 18px 0 6px; font-weight: 700; }
+.panel p { margin: 0; }
+.panel .one { font-weight: 500; margin-top: 8px; }
+.panel .meta { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 12px 0 0; font-size: 13px; }
+.panel .meta dt { color: var(--muted); }
+.panel .meta dd { margin: 0; }
+.panel .pin { font-size: 11px; color: var(--muted); float: right; }
+.life { list-style: none; padding: 0; margin: 0; display: grid; gap: 2px; }
+.life li { display: grid; grid-template-columns: 26px 64px minmax(0, 1fr); gap: 6px; padding: 5px 6px; border-radius: 6px; font-size: 13px; cursor: default; }
+.life li:hover { background: color-mix(in srgb, var(--fg) 7%, transparent); }
+.life .n { font-weight: 700; font-variant-numeric: tabular-nums; }
+.life .v { font-weight: 700; color: var(--c, var(--fg)); }
+.life .bc { color: var(--back); font-size: 11px; }
+.hint { color: var(--muted); font-size: 13px; }
+.goal { display: grid; gap: 8px; margin-top: 10px; }
+.goal div { display: grid; grid-template-columns: 52px minmax(0, 1fr); gap: 8px; font-size: 13px; }
+.goal b { color: var(--muted); font-weight: 700; font-size: 12px; }
+.stepchips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+
+/* SVG */
+.lane-head rect { fill: var(--prep); stroke: var(--front); stroke-width: 1.2; }
+.lane-head .h { font: 700 14px var(--f-body); fill: var(--fg); text-anchor: middle; }
+.lane-head .s { font: 11px var(--f-body); fill: var(--muted); text-anchor: middle; }
+.lifeline { stroke: var(--line); stroke-width: 1.5; stroke-dasharray: 5 5; }
+.band { fill: var(--band); stroke: var(--band-line); stroke-dasharray: 6 4; }
+.band-l { font: 11px var(--f-body); fill: var(--back); }
+.prepband { fill: var(--prep); stroke: var(--line); stroke-dasharray: 3 4; }
+.arrow { stroke: var(--front); stroke-width: 1.8; fill: none; }
+.arrow.back { stroke: var(--back); stroke-width: 2.6; }
+.arrow.prep { stroke-dasharray: 5 4; }
+.ttl { font: 600 13.5px var(--f-body); fill: var(--fg); }
+.txt { font: 12px var(--f-body); fill: var(--muted); }
+.who { font: 700 11px var(--f-body); fill: var(--fg); }
+.num circle { fill: var(--front); }
+.num.back circle { fill: var(--back); }
+.num text { font: 700 11px var(--f-body); fill: var(--surface); text-anchor: middle; }
+.num { cursor: pointer; }
+.chip { cursor: pointer; }
+.chip rect { fill: color-mix(in srgb, var(--c) 13%, var(--surface)); stroke: var(--c); stroke-width: 1.3; }
+.chip text { font: 500 11.5px var(--f-mono); fill: var(--c); }
+.chip.on rect { fill: var(--c); }
+.chip.on text { fill: var(--surface); font-weight: 700; }
+.row, .chip { transition: opacity .15s; }
+svg.focus .row:not(.inv) { opacity: .28; }
+svg.focus .chip:not(.on) { opacity: .3; }
+svg.focus-step .row:not(.inv) { opacity: .28; }
+.row.flash .rowbg { fill: color-mix(in srgb, var(--fg) 8%, transparent); }
+.rowbg { fill: transparent; }
+@media (prefers-reduced-motion: reduce) { .row, .chip { transition: none; } }
+
+@media (max-width: 980px) {
+  .main { grid-template-columns: minmax(0, 1fr); }
+  .panel { position: static; max-height: none; }
+}
+@media (max-width: 480px) {
+  .wrap { padding-inline: 16px; }
+}
+</style>
+
+<div class="wrap">
+  <header>
+    <h1>Authorization Code Flow 値トレーサー</h1>
+    <p>図の中の <code>state</code> や <code>code</code> のチップにカーソルを乗せると、その値が登場する箇所がすべて光り、右の欄にどこで生まれ、どこで使われ、どこで消えるかが出ます。クリックすると固定、番号をクリックするとそのステップの説明です。</p>
+  </header>
+  <div class="legend" id="legend"></div>
+  <div class="main">
+    <div class="diagram" id="diagram"></div>
+    <aside class="panel" id="panel" aria-live="polite"></aside>
+  </div>
+</div>
+
+<script>
+const CATS = {
+  rand:   { label: 'ランダム値', c: '--c-rand' },
+  code:   { label: '引換券', c: '--c-code' },
+  secret: { label: '秘密', c: '--c-secret' },
+  ident:  { label: '識別子', c: '--c-ident' },
+  token:  { label: 'トークン', c: '--c-token' },
+  sess:   { label: 'セッション', c: '--c-sess' },
+};
+
+const T = {
+  state: { label: 'state', cat: 'rand', maker: 'RP',
+    one: 'CSRF対策の合言葉',
+    purpose: 'callback（⑦）が「このブラウザが②で始めたログインの続き」かを確かめる。',
+    without: '攻撃者が自分の code を仕込んだ callback URL を踏ませると、被害者が攻撃者のアカウントでログインさせられる（ログインCSRF）。',
+    tip: 'ブラウザを通るので書き換えられる前提。中身に意味のあるデータを持たせない。' },
+  nonce: { label: 'nonce', cat: 'rand', maker: 'RP',
+    one: 'ID Token をこのセッションに縛る値',
+    purpose: '届いた ID Token が「このセッションで今始めたログインのために発行された」ものかを確かめる。',
+    without: '漏れた被害者の ID Token や code を攻撃者が自分のログインに差し込み、被害者としてログインできる。',
+    tip: 'IdP が署名付きの ID Token の中に埋め込むので、state と違って後から書き換えられない。' },
+  verifier: { label: 'code_verifier', cat: 'rand', maker: 'RP',
+    one: 'PKCE の秘密の元',
+    purpose: '⑧で code を交換するとき、「code を要求したのと同じ人だ」と証明する。',
+    without: '漏れた code を第三者がトークンに交換できる。client_secret を持てない SPA やネイティブアプリでは特に致命的。',
+    tip: '③では送らない。送るのはハッシュの code_challenge だけで、本体は⑧のバックチャネルで初めて外に出る。' },
+  challenge: { label: 'code_challenge', cat: 'rand', maker: 'RP',
+    one: 'code_verifier のハッシュ',
+    purpose: '③で IdP に預けておき、⑧で届く code_verifier と突き合わせてもらう。',
+    without: 'code_verifier と同じ。PKCE が成り立たない。',
+    tip: 'SHA-256 のハッシュなので、ブラウザで見られても元の code_verifier は逆算できない。' },
+  code: { label: 'code', cat: 'code', maker: 'IdP',
+    one: '使い捨ての引換券（認可コード）',
+    purpose: 'ブラウザ経由で運んでもいいものとして、トークンの代わりに渡す。RP はこれをバックチャネルでトークンと交換する。',
+    without: 'ID Token を直接 URL に載せることになり、履歴やリファラからトークンが漏れる。',
+    tip: '短命で1回限り。⑧で交換された時点で使えなくなる。' },
+  secret: { label: 'client_secret', cat: 'secret', maker: 'IdP（事前登録時）',
+    one: 'RP のパスワード',
+    purpose: '⑧で「code を持ってきたのが本物の RP だ」と IdP に証明する。',
+    without: 'code さえ手に入れば、誰でもトークンに交換できる。',
+    tip: 'RP のサーバーにだけ置く。ブラウザには絶対に出さない。' },
+  clientid: { label: 'client_id', cat: 'ident', maker: 'IdP（事前登録時）',
+    one: 'RP の公開 ID',
+    purpose: 'どのアプリのログインかを IdP に伝える。ID Token の aud（宛先）にも入る。',
+    without: '⑩で aud を照合できず、他のアプリ宛てに発行された ID Token を受け入れてしまう。',
+    tip: '公開情報で、秘密ではない。' },
+  redirect: { label: 'redirect_uri', cat: 'ident', maker: 'RP（事前登録時）',
+    one: 'code の届け先',
+    purpose: 'IdP が code を返す先。事前に登録した値と完全一致したときだけ使われる。',
+    without: '攻撃者のサイトに書き換えられると、code が攻撃者に届く。',
+    tip: '⑧でも同じ値を送り、③と一致するかを IdP が確かめる。' },
+  idt: { label: 'ID Token', cat: 'token', maker: 'IdP',
+    one: '「この人は誰か」の署名付き証明書（JWT）',
+    purpose: 'RP がユーザを特定する。sub がユーザ ID。このフローのゴール。',
+    without: '（これを手に入れるためのフロー）',
+    tip: '中に sub・iss・aud（= client_id）・exp・nonce が入っている。⑪以降のログイン管理には使わない。' },
+  at: { label: 'Access Token', cat: 'token', maker: 'IdP',
+    one: 'API を呼ぶための鍵',
+    purpose: 'IdP の UserInfo API など、ユーザの代わりに API を呼ぶ。',
+    without: 'ログインには影響しない。API を呼ばないなら使わない。',
+    tip: 'ログインの判定には使わない。それは ID Token の役目。' },
+  sess: { label: 'セッション', cat: 'sess', maker: 'RP',
+    one: 'RP とブラウザをつなぐ Cookie',
+    purpose: '②〜⑩の間は state・nonce・code_verifier の保管場所。⑪以降はログイン状態そのもの。',
+    without: 'state や nonce を照合する相手がいなくなる。',
+    tip: '⑪でセッション ID を作り直す（セッション固定攻撃の対策）。' },
+};
+
+const WHO = { RP: 'RP', U: 'ブラウザ', IdP: 'IdP' };
+
+const STEPS = [
+  { n: 0, from: 'RP', to: 'IdP', ch: 'prep', title: '事前登録（ログインより前に1回だけ）',
+    pre: [
+      { who: 'IdP', verb: '発行', t: ['clientid', 'secret'] },
+      { who: 'RP', verb: '登録', t: ['redirect'], note: '戻り先 URL を IdP に登録' },
+    ],
+    desc: 'RP の開発者が IdP の管理画面でアプリを登録する。client_id と client_secret を受け取り、redirect_uri を登録しておく。ログインのたびに行うものではない。' },
+  { n: 1, from: 'U', to: 'RP', title: 'GET /login',
+    desc: '未ログインのユーザが RP にアクセスする。' },
+  { n: 2, from: 'RP', to: 'U', title: '302 で IdP へリダイレクト',
+    pre: [
+      { who: 'RP', verb: '生成', t: ['state', 'nonce', 'verifier'], note: '推測できないランダム値' },
+      { who: 'RP', verb: '計算', t: ['challenge'], note: '= SHA256(code_verifier)' },
+      { who: 'RP', verb: '保存', t: ['state', 'nonce', 'verifier'], note: '→ セッションへ' },
+    ],
+    carry: ['clientid', 'redirect', 'state', 'nonce', 'challenge', 'sess'],
+    cn: { sess: 'Set-Cookie', state: 'Location の URL に載る' },
+    desc: 'RP は3つのランダム値を作ってセッションに保存し、ブラウザを IdP の認可エンドポイントへリダイレクトする。code_verifier は保存するだけで、送るのはハッシュの code_challenge。' },
+  { n: 3, from: 'U', to: 'IdP', title: 'GET /authorize',
+    carry: ['clientid', 'redirect', 'state', 'nonce', 'challenge'],
+    cn: { state: 'クエリ', nonce: 'クエリ', challenge: 'クエリ' },
+    post: [
+      { who: 'IdP', verb: '確認', t: ['clientid', 'redirect'], note: '登録済みの値と一致？' },
+      { who: 'IdP', verb: '預かる', t: ['state', 'nonce', 'challenge'], note: 'ログインが終わるまで' },
+    ],
+    desc: 'ブラウザが IdP にアクセスする。response_type=code（code をください）と scope=openid（OIDC です）もここで送る。' },
+  { n: 4, from: 'IdP', to: 'U', title: 'ログイン画面・同意画面',
+    desc: 'IdP がログイン画面と、必要なら「このアプリに情報を渡していいか？」の同意画面を出す。' },
+  { n: 5, from: 'U', to: 'IdP', title: 'ID/パスワード・MFA・同意',
+    desc: 'ユーザがパスワードや MFA で認証し、同意する。ここで初めて「誰か」が決まる。' },
+  { n: 6, from: 'IdP', to: 'U', title: '302 で redirect_uri へ戻す',
+    pre: [
+      { who: 'IdP', verb: '発行', t: ['code'], note: 'ユーザ・nonce・code_challenge と紐づけて保存' },
+      { who: 'IdP', verb: '使う', t: ['redirect'], note: '戻し先 URL として' },
+    ],
+    carry: ['code', 'state'],
+    cn: { code: '?code=… クエリ', state: '③で預かった値をそのまま返す' },
+    desc: 'IdP は code を発行し、redirect_uri へブラウザを戻す。state は③で受け取った値をそのまま返す。' },
+  { n: 7, from: 'U', to: 'RP', title: 'GET /callback?code&state',
+    carry: ['code', 'state', 'sess'],
+    cn: { sess: 'Cookie' },
+    post: [
+      { who: 'RP', verb: '照合', t: ['state'], note: 'クエリの値 = セッションの値？' },
+    ],
+    desc: 'ブラウザが RP の callback にアクセスする。RP は state がセッションに保存した値と一致するか確かめ、違えば中断する。' },
+  { n: 8, from: 'RP', to: 'IdP', ch: 'back', title: 'POST /token',
+    pre: [
+      { who: 'RP', verb: '取り出す', t: ['verifier'], note: 'セッションから' },
+    ],
+    carry: ['code', 'clientid', 'secret', 'verifier', 'redirect'],
+    cn: { verifier: 'ここで初めて外に出る' },
+    post: [
+      { who: 'IdP', verb: '認証', t: ['clientid', 'secret'], note: '本物の RP か？' },
+      { who: 'IdP', verb: '照合', t: ['verifier', 'challenge'], note: 'SHA256(code_verifier) = ③の code_challenge？' },
+      { who: 'IdP', verb: '照合', t: ['redirect'], note: '③と同じ値か？' },
+      { who: 'IdP', verb: '消費', t: ['code'], note: '使用済みにする（2回目は失敗）' },
+    ],
+    desc: 'RP が IdP に直接 code を持っていき、トークンと交換する。ブラウザは通らない。' },
+  { n: 9, from: 'IdP', to: 'RP', ch: 'back', title: 'ID Token（+ Access Token）',
+    pre: [
+      { who: 'IdP', verb: '発行', t: ['idt', 'at'] },
+      { who: 'IdP', verb: '埋め込み', t: ['nonce', 'clientid'], note: '→ ID Token の nonce・aud' },
+      { who: 'IdP', verb: '署名', t: ['idt'], note: 'IdP の秘密鍵で' },
+    ],
+    carry: ['idt', 'at'],
+    desc: 'IdP が署名付きの ID Token（と Access Token）を返す。' },
+  { n: 10, from: 'RP', to: 'RP', title: 'ID Token を検証',
+    pre: [
+      { who: 'RP', verb: '検証', t: ['idt'], note: '署名（JWKS）・iss・exp' },
+      { who: 'RP', verb: '照合', t: ['clientid'], note: 'aud = 自分の client_id？' },
+      { who: 'RP', verb: '照合', t: ['nonce'], note: 'ID Token の nonce = セッションの値？' },
+      { who: 'RP', verb: '特定', t: ['idt'], note: 'sub でユーザが決まる' },
+    ],
+    desc: 'RP が ID Token を検証し、sub でユーザを特定する。' },
+  { n: 11, from: 'RP', to: 'U', title: 'Set-Cookie（ログイン完了）',
+    pre: [
+      { who: 'RP', verb: '破棄', t: ['state', 'nonce', 'verifier'], note: '役目を終えたので消す' },
+      { who: 'RP', verb: '作り直す', t: ['sess'], note: 'ログイン済みの新しいセッション' },
+    ],
+    carry: ['sess'],
+    cn: { sess: 'Set-Cookie' },
+    desc: 'RP がログイン済みのセッションを作って Cookie を発行する。以降は ID Token ではなく、このセッションでログイン状態を管理する。' },
+];
+
+const CIRC = '⓪①②③④⑤⑥⑦⑧⑨⑩⑪';
+const X = { RP: 120, U: 440, IdP: 760 };
+const W = 880;
+const FM = '500 11.5px "JetBrains Mono", ui-monospace, monospace';
+const FT = '12px "IBM Plex Sans JP", "Hiragino Sans", system-ui, sans-serif';
+const FW = '700 11px "IBM Plex Sans JP", "Hiragino Sans", system-ui, sans-serif';
+const ctx = document.createElement('canvas').getContext('2d');
+const tw = (s, f) => { ctx.font = f; return ctx.measureText(s).width; };
+const cvar = t => `var(${CATS[T[t].cat].c})`;
+
+function tokensOf(s) {
+  const set = new Set(s.carry || []);
+  for (const a of [...(s.pre || []), ...(s.post || [])]) a.t.forEach(t => set.add(t));
+  return [...set];
+}
+
+function events(t) {
+  const out = [];
+  for (const s of STEPS) {
+    for (const a of s.pre || []) if (a.t.includes(t)) out.push({ n: s.n, verb: a.verb, who: a.who, detail: a.note || '' });
+    if ((s.carry || []).includes(t)) {
+      const route = `${WHO[s.from]} → ${WHO[s.to]}`;
+      const note = s.cn && s.cn[t] ? `（${s.cn[t]}）` : '';
+      out.push({ n: s.n, verb: '運ぶ', who: '', detail: route + note, back: s.ch === 'back' });
+    }
+    for (const a of s.post || []) if (a.t.includes(t)) out.push({ n: s.n, verb: a.verb, who: a.who, detail: a.note || '' });
+  }
+  return out;
+}
+
+function chipSvg(t, x, y) {
+  const label = T[t].label;
+  const w = tw(label, FM) + 14;
+  return { w, svg: `<g class="chip" data-t="${t}" tabindex="0" role="button" aria-label="${label}" style="--c:${cvar(t)}"><rect x="${x}" y="${y}" width="${w}" height="20" rx="5"/><text x="${x + 7}" y="${y + 14}">${label}</text></g>` };
+}
+
+function flowLine(items, x0, x1, y) {
+  let x = x0, ly = y, svg = '';
+  for (const it of items) {
+    const w = it.kind === 'chip' ? tw(T[it.t].label, FM) + 14 : tw(it.s, it.kind === 'who' ? FW : FT);
+    if (x > x0 && x + w > x1) { x = x0 + 12; ly += 25; }
+    if (it.kind === 'chip') svg += chipSvg(it.t, x, ly).svg;
+    else svg += `<text class="${it.kind === 'who' ? 'who' : 'txt'}" x="${x}" y="${ly + 14}">${it.s}</text>`;
+    x += w + 6;
+  }
+  return { svg, bottom: ly + 20 };
+}
+
+function render() {
+  let y = 86, rows = '', bands = '';
+  const yr = {};
+  for (const s of STEPS) {
+    const self = s.from === s.to;
+    const y0 = y;
+    let x0, x1, arrow, titleY;
+    if (self) {
+      x0 = X.RP + 58; x1 = W - 20; titleY = y0 + 16;
+      arrow = `<path class="arrow" d="M${X.RP + 4},${y0 + 6} H${X.RP + 42} V${y0 + 30} H${X.RP + 8}" marker-end="url(#m-f)"/>`;
+    } else {
+      const a = Math.min(X[s.from], X[s.to]), b = Math.max(X[s.from], X[s.to]);
+      x0 = a + 16; x1 = b - 16; titleY = y0 + 16;
+      const dir = X[s.to] > X[s.from] ? 1 : -1;
+      const cls = s.ch === 'back' ? 'arrow back' : s.ch === 'prep' ? 'arrow prep' : 'arrow';
+      const mk = s.ch === 'back' ? 'm-b' : 'm-f';
+      arrow = `<line class="${cls}" x1="${X[s.from] + dir * 4}" y1="${y0 + 28}" x2="${X[s.to] - dir * 6}" y2="${y0 + 28}" marker-end="url(#${mk})"/>`;
+    }
+    const num = `<g class="num ${s.ch === 'back' ? 'back' : ''}" data-step="${s.n}" tabindex="0" role="button" aria-label="ステップ${s.n}"><circle cx="${x0 + 10}" cy="${titleY - 5}" r="10"/><text x="${x0 + 10}" y="${titleY - 1}">${s.n}</text></g>`;
+    const title = `<text class="ttl" x="${x0 + 26}" y="${titleY}">${s.title}</text>`;
+    let cy = y0 + (self ? 40 : 40), body = '';
+    const lines = [];
+    for (const a of s.pre || []) lines.push(actItems(a));
+    if (s.carry && s.carry.length) lines.push([{ kind: 'who', s: '運ぶ' }, ...s.carry.map(t => ({ kind: 'chip', t }))]);
+    for (const a of s.post || []) lines.push(actItems(a));
+    for (const items of lines) {
+      const r = flowLine(items, x0, x1, cy);
+      body += r.svg; cy = r.bottom + 6;
+    }
+    const bottom = lines.length ? cy : y0 + 36;
+    yr[s.n] = [y0, bottom];
+    rows += `<g class="row" data-step="${s.n}" data-ts="${tokensOf(s).join(' ')}"><rect class="rowbg" x="8" y="${y0 - 8}" width="${W - 16}" height="${bottom - y0 + 10}" rx="6"/>${arrow}${num}${title}${body}</g>`;
+    y = bottom + 22;
+  }
+  const H = y + 10;
+  const [b8, b9] = [yr[8], yr[9]];
+  bands += `<rect class="band" x="14" y="${b8[0] - 16}" width="${W - 28}" height="${b9[1] - b8[0] + 34}" rx="10"/>`;
+  bands += `<text class="band-l" x="${W - 26}" y="${b9[1] + 12}" text-anchor="end">バックチャネル：RP ↔ IdP の直接通信（ブラウザを通らない）</text>`;
+  bands += `<rect class="prepband" x="14" y="${yr[0][0] - 16}" width="${W - 28}" height="${yr[0][1] - yr[0][0] + 26}" rx="10"/>`;
+  const heads = Object.entries({ RP: ['Relying Party', 'アプリのサーバー'], U: ['ブラウザ', 'ユーザ'], IdP: ['Identity Provider', '認可サーバー'] })
+    .map(([k, [h, s]]) => `<g class="lane-head"><rect x="${X[k] - 88}" y="12" width="176" height="46" rx="8"/><text class="h" x="${X[k]}" y="32">${h}</text><text class="s" x="${X[k]}" y="49">${s}</text></g>`).join('');
+  const lifelines = Object.values(X).map(x => `<line class="lifeline" x1="${x}" y1="58" x2="${x}" y2="${H - 6}"/>`).join('');
+  document.getElementById('diagram').innerHTML =
+    `<svg id="svg" viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Authorization Code Flow のシーケンス図">
+      <defs>
+        <marker id="m-f" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--front)"/></marker>
+        <marker id="m-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" style="fill:var(--back)"/></marker>
+      </defs>
+      ${bands}${lifelines}${heads}${rows}
+    </svg>`;
+  bind();
+  apply();
+}
+
+function actItems(a) {
+  const items = [{ kind: 'who', s: `${a.who} ${a.verb}` }, ...a.t.map(t => ({ kind: 'chip', t }))];
+  if (a.note) items.push({ kind: 'txt', s: a.note });
+  return items;
+}
+
+/* ---------- interaction ---------- */
+let pinned = null;   // {k:'t'|'s', id}
+let hover = null;
+const cur = () => hover || pinned;
+
+function bind() {
+  const svg = document.getElementById('svg');
+  svg.querySelectorAll('.chip').forEach(el => {
+    const t = el.dataset.t;
+    el.addEventListener('mouseenter', () => { hover = { k: 't', id: t }; apply(); });
+    el.addEventListener('mouseleave', () => { hover = null; apply(); });
+    el.addEventListener('click', () => togglePin({ k: 't', id: t }));
+    el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); togglePin({ k: 't', id: t }); } });
+  });
+  svg.querySelectorAll('.num').forEach(el => {
+    const n = +el.dataset.step;
+    el.addEventListener('mouseenter', () => { hover = { k: 's', id: n }; apply(); });
+    el.addEventListener('mouseleave', () => { hover = null; apply(); });
+    el.addEventListener('click', () => togglePin({ k: 's', id: n }));
+    el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); togglePin({ k: 's', id: n }); } });
+  });
+}
+
+function togglePin(p) {
+  pinned = pinned && pinned.k === p.k && pinned.id === p.id ? null : p;
+  hover = null;
+  apply();
+}
+
+function apply() {
+  const svg = document.getElementById('svg');
+  if (!svg) return;
+  const c = cur();
+  const t = c && c.k === 't' ? c.id : null;
+  const sn = c && c.k === 's' ? c.id : null;
+  svg.classList.toggle('focus', !!t);
+  svg.classList.toggle('focus-step', sn !== null);
+  svg.querySelectorAll('.chip').forEach(el => el.classList.toggle('on', el.dataset.t === t));
+  svg.querySelectorAll('.row').forEach(el => {
+    const inv = t ? el.dataset.ts.split(' ').includes(t) : sn !== null ? +el.dataset.step === sn : false;
+    el.classList.toggle('inv', inv);
+  });
+  document.querySelectorAll('#legend .tchip').forEach(el => el.classList.toggle('on', el.dataset.t === t));
+  renderPanel(c);
+}
+
+function flash(n, on) {
+  const el = document.querySelector(`.row[data-step="${n}"]`);
+  if (el) el.classList.toggle('flash', on);
+}
+
+function renderPanel(c) {
+  const p = document.getElementById('panel');
+  const pinNote = pinned ? '<span class="pin">固定中（もう一度クリックで解除）</span>' : '';
+  if (!c) {
+    p.innerHTML = `
+      <h2>何を追う？</h2>
+      <p class="hint">図か上の一覧のチップにカーソルを乗せると、その値の一生がここに出ます。</p>
+      <h3>このフローの目的</h3>
+      <div class="goal">
+        <div><b>ゴール</b><span>RP が「この人は誰か」を表す ID Token を安全に手に入れる</span></div>
+        <div><b>問題</b><span>IdP が結果を返せる経路はブラウザへのリダイレクトだけ。そこにトークンを載せると URL・履歴・リファラから漏れる</span></div>
+        <div><b>解決</b><span>ブラウザには使い捨ての引換券（code）だけを運ばせ、トークンは RP が IdP から直接取りに行く</span></div>
+        <div><b>補強</b><span>client_secret と PKCE で、code を拾われても本物の RP 以外は交換できない</span></div>
+      </div>
+      <h3>読み方</h3>
+      <p class="hint">「運ぶ」はその矢印に載って移動する値、「RP 生成」「IdP 照合」などはその場で行われる処理です。橙の枠はブラウザを通らない通信です。</p>`;
+    return;
+  }
+  if (c.k === 's') {
+    const s = STEPS.find(x => x.n === c.id);
+    const ts = tokensOf(s);
+    p.innerHTML = `${pinNote}
+      <h2>${CIRC[s.n]} ${s.title}</h2>
+      <p class="hint">${WHO[s.from]}${s.from === s.to ? ' の内部処理' : ' → ' + WHO[s.to]}${s.ch === 'back' ? '（バックチャネル）' : s.ch === 'prep' ? '' : '（フロントチャネル）'}</p>
+      <p class="one">${s.desc}</p>
+      ${ts.length ? `<h3>登場する値</h3><div class="stepchips">${ts.map(t => `<button class="tchip" data-t="${t}" style="--c:${cvar(t)}">${T[t].label}</button>`).join('')}</div>` : ''}`;
+    p.querySelectorAll('.tchip').forEach(b => b.addEventListener('click', () => togglePin({ k: 't', id: b.dataset.t })));
+    return;
+  }
+  const t = T[c.id];
+  const ev = events(c.id);
+  p.innerHTML = `${pinNote}
+    <h2><button class="tchip on" style="--c:${cvar(c.id)}" tabindex="-1">${t.label}</button></h2>
+    <p class="one">${t.one}</p>
+    <dl class="meta">
+      <dt>種類</dt><dd>${CATS[t.cat].label}</dd>
+      <dt>作る人</dt><dd>${t.maker}</dd>
+      <dt>生まれる</dt><dd>${CIRC[ev[0].n]}</dd>
+      <dt>最後</dt><dd>${CIRC[ev[ev.length - 1].n]}</dd>
+    </dl>
+    <h3>一生</h3>
+    <ol class="life" style="--c:${cvar(c.id)}">
+      ${ev.map(e => `<li data-n="${e.n}"><span class="n">${CIRC[e.n]}</span><span class="v">${e.who ? e.who + ' ' : ''}${e.verb}</span><span>${e.detail}${e.back ? ' <span class="bc">バックチャネル</span>' : ''}</span></li>`).join('')}
+    </ol>
+    <h3>何のため</h3><p>${t.purpose}</p>
+    <h3>なかったら</h3><p>${t.without}</p>
+    <h3>ポイント</h3><p>${t.tip}</p>`;
+  p.querySelectorAll('.life li').forEach(li => {
+    li.addEventListener('mouseenter', () => flash(li.dataset.n, true));
+    li.addEventListener('mouseleave', () => flash(li.dataset.n, false));
+  });
+}
+
+function renderLegend() {
+  const g = {};
+  for (const [k, v] of Object.entries(T)) (g[v.cat] ||= []).push(k);
+  const el = document.getElementById('legend');
+  el.innerHTML = Object.entries(g).map(([cat, ks]) =>
+    `<div class="grp"><span class="cat">${CATS[cat].label}</span>${ks.map(k => `<button class="tchip" data-t="${k}" style="--c:${cvar(k)}">${T[k].label}</button>`).join('')}</div>`).join('')
+    + `<div class="grp"><span class="chan"><i></i>ブラウザ経由</span><span class="chan"><i class="b"></i>サーバー間直接</span></div>`;
+  el.querySelectorAll('.tchip').forEach(b => {
+    const t = b.dataset.t;
+    b.addEventListener('mouseenter', () => { hover = { k: 't', id: t }; apply(); });
+    b.addEventListener('mouseleave', () => { hover = null; apply(); });
+    b.addEventListener('focus', () => { hover = { k: 't', id: t }; apply(); });
+    b.addEventListener('blur', () => { hover = null; apply(); });
+    b.addEventListener('click', () => togglePin({ k: 't', id: t }));
+  });
+}
+
+renderLegend();
+render();
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(render);
+</script>
+
+</body></html>
